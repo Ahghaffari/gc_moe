@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pth
+*.pt
+
+experiments/
+save/
+wandb/
+
+*.npz
+*.npy
+.vscode/

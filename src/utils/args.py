@@ -1,0 +1,270 @@
+import argparse
+import os
+import sys
+import logging
+from src.config import GWNConfig as cf
+
+def get_logger(log_dir, name, log_filename, level=logging.INFO):
+    os.makedirs(log_dir, exist_ok=True)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    file_formatter = logging.Formatter('%(asctime)s - %(message)s')
+    file_handler = logging.FileHandler(os.path.join(log_dir, log_filename))
+    file_handler.setFormatter(file_formatter)
+
+    console_formatter = logging.Formatter('%(asctime)s - %(message)s')
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(console_formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    print('Log directory:', log_dir)
+    
+    return logger
+
+def get_config():
+    parser = get_public_config()
+    args = parser.parse_args()
+    if hasattr(args, 'mlp') and args.mlp:
+        args.model = 'mlp'
+    addition = get_model_args(args.model)
+    for key, value in addition.items():
+        setattr(args, key, value)
+    
+    if hasattr(args, 'run_id') and args.run_id:
+        log_dir = './experiments/{}/{}_{}/'.format(args.model, args.dataset, args.run_id)
+        logger = get_logger(log_dir, __name__, 'record_s{}_{}.log'.format(args.seed, args.run_id))
+    else:
+        log_dir = './experiments/{}/{}/'.format(args.model, args.dataset)
+        logger = get_logger(log_dir, __name__, 'record_s{}.log'.format(args.seed))
+    
+    logger.info(args)
+    args.logger = logger
+    args.log_dir = log_dir
+    return args
+
+def get_public_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--device', type=str, default=cf.device)
+    parser.add_argument('--dataset', type=str, default=cf.dataset)
+    parser.add_argument('--years', type=str, default=cf.years)
+    parser.add_argument('--model', type=str, default=cf.model)
+    parser.add_argument('--seed', type=int, default=cf.seed)
+    parser.add_argument('--batch_size', type=int, default=cf.batch_size)
+    parser.add_argument('--seq_length', type=int, default=cf.seq_length)
+    parser.add_argument('--horizon', type=int, default=cf.horizon)
+    parser.add_argument('--input_dim', type=int, default=cf.input_dim)
+    parser.add_argument('--output_dim', type=int, default=cf.output_dim)
+
+    parser.add_argument('--mode', type=str, default='train')
+    parser.add_argument('--max_epochs', type=int, default=200)
+    parser.add_argument('--patience', type=int, default=10)
+    parser.add_argument('--run_id', type=str, default='',
+                       help='Unique identifier for this run (e.g., run1, exp_lr001). Used to prevent parallel runs from overwriting each other.')
+    parser.add_argument('--lrate', type=float, default=1e-3)
+    parser.add_argument('--wdecay', type=float, default=5e-4)
+    parser.add_argument('--dropout', type=float, default=0.3)
+    parser.add_argument('--clip_grad_value', type=int, default=5)
+    parser.add_argument('--adj_type', type=str, default='doubletransition')
+    parser.add_argument('--stlora', action='store_true')
+    parser.add_argument('--frozen', action='store_true')
+    parser.add_argument('--nor_adj', action='store_true')
+    parser.add_argument('--lagcn', action='store_true')
+    parser.add_argument('--pre_train', type=str, default="")
+    parser.add_argument('--save', type=str, default="test.pth")
+    parser.add_argument('--embed_dim', type=int, default=12)
+    parser.add_argument('--num_nalls', type=int, default=4)
+    parser.add_argument('--num_lablocks', type=int, default=1)
+    parser.add_argument('--linear', action='store_true')
+    parser.add_argument('--last_dropout', type=float, default=0.3)
+    parser.add_argument('--last_lr', type=float, default=1e-3)
+    parser.add_argument('--last_weight_decay', type=float, default=1e-4)
+    parser.add_argument('--last_pool_type', type=str, default="mean")
+    parser.add_argument('--mlp', action='store_true')
+    # generalized LoRA injection over backbones
+    parser.add_argument('--backbone_lora', action='store_true')
+    parser.add_argument('--lora_r', type=int, default=8)
+    parser.add_argument('--lora_alpha', type=int, default=16)
+    parser.add_argument('--lora_dropout', type=float, default=0.1)
+    parser.add_argument('--lora_include', type=str, default="")
+    parser.add_argument('--lora_exclude', type=str, default="bn,layernorm,batchnorm")
+    # wandb
+    parser.add_argument('--use_wandb', action='store_true', help='Enable Weights & Biases logging')
+    
+    # MoE-STLoRA specific arguments
+    parser.add_argument('--expert_models', type=str, nargs='+', default=['gwnet', 'stgcn', 'agcrn'],
+                       help='List of expert model names for MoE (default: gwnet stgcn agcrn)')
+    parser.add_argument('--frozen_experts', action='store_true',
+                       help='Freeze expert backbone weights (parameter efficient mode)')
+    parser.add_argument('--shared_adapters', action='store_true',
+                       help='Share ST-LoRA adapters across experts (fewer parameters)')
+    parser.add_argument('--router_embed_dim', type=int, default=32,
+                       help='Embedding dimension for router network')
+    parser.add_argument('--use_input_context', action='store_true', default=True,
+                       help='Use input data for dynamic routing (vs pure graph-based). Default is True.')
+    parser.add_argument('--no_input_context', dest='use_input_context', action='store_false',
+                       help='Disable input context for routing (use only graph-based)')
+    parser.add_argument('--moe_temperature', type=float, default=1.0,
+                       help='Softmax temperature for routing (lower = more specialized)')
+    parser.add_argument('--load_balance_weight', type=float, default=0.01,
+                       help='Weight for load balancing loss')
+    parser.add_argument('--moe_top_k', type=int, default=None,
+                       help='Number of experts to route to (None=all experts, ST-MoE style sparse routing)')
+    parser.add_argument('--moe_noise_scale', type=float, default=0.5,
+                       help='Noise scale for noisy top-k gating during training')
+    parser.add_argument('--num_layers', type=int, default=4,
+                       help='Number of layers in ST-LoRA adapters')
+    parser.add_argument('--num_blocks', type=int, default=1,
+                       help='Number of ST-LoRA adapter blocks')
+    parser.add_argument('--track_expert_stats', action='store_true', default=True,
+                       help='Track and log expert routing statistics')
+    parser.add_argument('--early_routing', action='store_true',
+                       help='Enable early routing to select experts before forwarding data')
+    parser.add_argument('--routing_mode', type=str, default='soft', choices=['soft', 'hard'],
+                       help='Routing mode: soft (weighted combination) or hard (select specific experts)')
+
+    # Pretrained expert loading
+    parser.add_argument('--pretrained_experts_dir', type=str, default='',
+                       help='Directory containing pretrained expert weights (e.g., save/). '
+                            'Files should be named {model}_{dataset}_{id}.pth, e.g. gwnet_pems04_1.pth')
+
+    # Input-side per-node feature projection
+    parser.add_argument('--input_projection', action='store_true',
+                       help='Enable per-node, per-expert input feature projection before experts')
+    parser.add_argument('--shared_input_proj', action='store_true',
+                       help='Share input projection across experts (fewer params)')
+    parser.add_argument('--input_proj_hidden', type=int, default=32,
+                       help='Hidden dimension for input projection hypernetwork')
+    parser.add_argument('--input_proj_dropout', type=float, default=0.1,
+                       help='Dropout rate for input projection')
+
+    # Graph-conditioned output refinement (the "full method" component)
+    parser.add_argument('--output_refinement', action='store_true',
+                       help='Enable graph-conditioned per-node affine correction of MoE output. '
+                            'Learns topology-conditioned scale+bias for each node applied after '
+                            'weighted expert combination. The key novel component of our full method.')
+    parser.add_argument('--refine_hidden_dim', type=int, default=32,
+                       help='Hidden dim for the output refinement hypernetworks (scale_net, bias_net)')
+    parser.add_argument('--routing_entropy_weight', type=float, default=0.5,
+                       help='Weight for the routing entropy minimisation loss. '
+                            'Pushes each node toward sharp single-expert routing rather than '
+                            'uniform weight distribution. 0 disables. Default 0.5.')
+
+    # Router variant selection (for ablation studies)
+    parser.add_argument('--router_type', type=str, default='graph_conditioned',
+                       choices=['graph_conditioned', 'dense_mlp', 'switch', 'expert_choice', 'hash'],
+                       help='Router architecture for MoE model (default: graph_conditioned)')
+
+    # Stacking meta-learner arguments
+    parser.add_argument('--stacking_hidden_dim', type=int, default=64,
+                       help='Hidden dimension for stacking meta-learner MLP')
+    parser.add_argument('--stacking_meta_layers', type=int, default=2,
+                       help='Number of hidden layers in stacking meta-learner')
+    parser.add_argument('--stacking_dropout', type=float, default=0.1,
+                       help='Dropout rate for stacking meta-learner')
+
+    return parser
+
+def get_model_args(model_name):
+    model_args = {}
+    if model_name == 'gwnet':
+        model_args = {
+                      'adp_adj' : 1,
+                      'init_dim' : 32,
+                      'skip_dim' : 256,
+                      'end_dim' : 512,
+                      }
+    elif model_name == 'stgcn':
+        model_args = {'Kt' : 3,
+                    'Ks' : 3,
+                    'block_num' : 2,
+                    'step_size' : 10,
+                    'end_dim' : 512,
+                    'gamma' : 0.95,
+                    }
+    elif model_name == 'agcrn':
+        model_args = {
+            'rnn_unit' : 64,
+            'num_layer' : 2,
+            'cheb_k' : 2,      
+        }
+    elif model_name == 'lstm':
+        model_args = {
+            'init_dim':32,
+            'hid_dim':64,
+            'end_dim':512,
+            'layer':2
+        }
+    elif model_name == 'd2stgnn':
+        model_args = {
+            'num_feat':1,
+            'num_hidden':32,
+            'node_hidden':12,
+            'time_emb_dim':12,
+            'layer':5,
+            'k_t' : 3,
+            'k_s' : 2,
+            'gap' : 3,
+            'cl_epoch':3,
+            'warm_epoch':30,
+            'tpd':96
+        }
+    elif model_name == 'dcrnn':
+        model_args = {
+            'n_filters':64,
+            'max_diffusion_step':2,
+            'filter_type':'doubletransition',
+            'num_rnn_layers':2,
+            'cl_decay_steps':2000
+        }
+    elif model_name == 'astgcn':
+        model_args = {
+            'order':3,
+            'nb_block':2,
+            'nb_chev_filter':64,
+            'nb_time_filter':64,
+            'time_stride':1
+        }
+    elif  model_name == 'stgode':
+        model_args = {
+            'tpd' : 96,
+            'sigma': 0.1,
+            'thres': 0.6
+        }
+    elif model_name == 'dgcrn':
+        model_args = {
+            'gcn_depth': 2,
+            'rnn_size': 64,
+            'hyperGNN_dim': 16,
+            'node_dim': 40,
+            'tanhalpha': 3,
+            'cl_decay_step': 2000,
+            'step_size': 2500,
+            'tpd': 96
+        }
+    elif model_name == 'dstagnn':
+        model_args = {
+            'order': 2,
+            'nb_block': 2,
+            'nb_chev_filter': 32,
+            'nb_time_filter': 32,
+            'time_stride': 1,
+            'd_model': 512,
+            'd_k': 32,
+            'n_head': 3
+        }
+    elif model_name == 'mlp':
+        model_args = {
+            'hidden_dim': 128,
+            'num_layers': 2,
+            'dropout': 0.1
+        }
+    elif model_name == 'moe':
+        model_args = {}
+    elif model_name == 'simple_ensemble':
+        model_args = {}
+    elif model_name == 'stacking_ensemble':
+        model_args = {}
+    return model_args
